@@ -1,0 +1,16 @@
+{
+  "name": "adva-superpowers",
+  "version": "0.1.0",
+  "description": "Claude Code skills and MCP access for the Adva platform.",
+  "author": {
+    "name": "Adva",
+    "url": "https://getadva.ai"
+  },
+  "mcpServers": {
+    "adva-staging": {
+      "type": "http",
+      "url": "https://mcp-staging.getadva.ai/mcp"
+    }
+  },
+  "skills": "./skills/"
+}
