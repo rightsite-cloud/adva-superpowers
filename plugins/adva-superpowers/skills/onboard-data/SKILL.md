@@ -44,6 +44,8 @@ Guide an agent through importing data from any external source into Adva. This s
 
 These are Adva platform facts. Violating them breaks idempotency, produces bad data, or fails validation.
 
+- **Never fabricate, invent, or fill in data values.** If a field is blank, null, or missing in the source data, pass it as blank/null. Do not generate placeholder emails, phone numbers, prices, or any other values. Your job is to map and load, not to clean or enrich.
+- **Never modify source data without explicit user approval.** If you think a value looks wrong, incomplete, or needs formatting — ask the user. Do not silently fix, normalize, or transform values. Show them what you see and what you would propose, and wait for confirmation.
 - **Always set `external_id` and `source` on every record.** `external_id` is the source system's primary key; `source` is a short string identifying the system (e.g. `"csv_upload"`, `"sheets"`, `"jobber"`). Without these, every re-run creates duplicates.
 - **Cross-entity references use `*_external_id` fields, never Adva UUIDs.** E.g. on a proposal, set `customer_external_id` to the source's customer ID. The import API resolves these to Adva UUIDs via an external-id index.
 - **Never send computed values.** Totals, margins, balances, tax amounts, line totals — Adva computes these natively from the constituent fields. If the source has them, drop them from the mapping rather than passing them through.
