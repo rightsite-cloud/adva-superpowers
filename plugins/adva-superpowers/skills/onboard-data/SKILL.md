@@ -1,11 +1,28 @@
 ---
 name: onboard-data
-description: Use when the user wants to import, onboard, or migrate data from an external source (CSV, spreadsheet, API export, or another system like Airtable, Google Sheets, Jobber, Salesforce) into the Adva platform. Covers business + target selection, entity mapping, industry packs, custom-field creation, validation, idempotent uploads via the adva-staging MCP, and troubleshooting common friction.
+description: Use when the user wants to import, onboard, or migrate data from any
+  external source (CSV, spreadsheet, API export, Airtable, Google Sheets, Jobber,
+  Salesforce) into the Adva platform. Also use when the user hits import errors,
+  validation failures, or data model questions — this skill explains Adva's contact
+  identity model, entity tiers, and common failure patterns. Covers business selection,
+  entity mapping, industry packs, custom-field creation, validation, idempotent uploads
+  via the adva-staging MCP, and automatic Linear bug filing when platform issues are found.
 ---
 
 # Onboard Data to Adva
 
 Guide an agent through importing data from any external source into Adva. This skill is **source-agnostic** — whatever the source system is (spreadsheet, API, database dump, hand-built CSV), the workflow is the same once the agent can read rows from it. Source-specific quirks and advanced target-side options live in separate reference files, loaded only when relevant.
+
+## Data model foundations
+
+Before importing, understand the key invariants that govern how Adva stores data. Load [references/data-model.md](references/data-model.md) for the full picture. Key points:
+
+- **Multi-tenant hierarchy**: Account → Business → Brand. Every import targets exactly one business. `business_id` scopes all data.
+- **Unified Contact Model**: `core.contacts` is a global identity store. A contact becomes a "customer" or "team member" via a `contact_role` row scoped to a specific business. The same person can hold roles in multiple businesses — they share one contact record.
+- **Email is the global identity key**: `UNIQUE INDEX idx_contacts_email` enforces one contact per email address across the entire account. The import pipeline uses an upsert — if the email already exists, a new role is attached to the existing contact. Post-ADV-749, `idx_contacts_email` surfacing as a raw error is a platform bug, not a data error.
+- **Phone is a soft match signal, not a unique key**: Normalized to E.164 via trigger. Multiple contacts can share a phone number. `find_duplicate_contacts()` uses phone for advisory matching only — no uniqueness enforced.
+- **Entity tiers**: Tier-3+ records have FK constraints on tier-2. A proposal (`customer_id` FK) requires the customer to exist before the proposal can import. Wrong order = FK violation. Always import lower tiers first.
+- **Linear auto-filing**: At startup (after picking the business), check whether `mcp__linear__*` tools are available and whether the ADV project is accessible. If yes, tell the user: *"I can file platform bugs directly into Linear as we find them. Platform bugs — I file; data issues — I help you fix here."* Set `LINEAR_FILING_ENABLED = true` in the session. If tools are present but ADV project is not accessible, proceed silently.
 
 ## The core workflow
 
@@ -82,9 +99,19 @@ Load only when the onboarding actually needs schema extension or customer-specif
 ## Common gotchas
 
 - **Enum translation.** Source values rarely match Adva's enums out of the box (e.g. source has `"Business"` / `"Individual"`, Adva expects `"commercial"` / `"residential"`). Read the schema's `enum` constraints and build a per-field translation map. `mcp__adva-staging__get_field_schema` is the fastest way to drill into one field's allowed values. Validation errors will also point at the offending field — use them.
-- **Secondary contacts.** Many sources collapse primary + secondary customer onto one record. Adva's customer entity is per-contact; a second contact is its own customer record, linked via the shared deal or account.
+- **Secondary contacts.** Many sources collapse primary + secondary customer onto one record. Adva's customer entity is per-contact; a second contact is its own customer record, linked via the shared proposal or account.
 - **Addresses are separate entities.** Billing / service addresses belong on a `location` record, not directly on a customer. Customer → location is 1:N.
 - **Field names are exact.** Adva field names are snake_case and case-sensitive. Don't normalize spaces or change capitalization when building mappings.
+
+### Failure interpretation
+
+When `validate_records` or `upload_records` returns errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
+
+Errors fall into two classes:
+- **Data issues** — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
+- **Platform bugs** — `idx_contacts_email` violation (post-ADV-749), unexpected 500 on small batch, server timeout on small batch, any error contradicting the stated model. Auto-file a Linear ticket if `LINEAR_FILING_ENABLED`. Continue with records that passed.
+
+Never show raw database error messages to the user. Translate them. Never drop failing records silently.
 
 ## What this skill does NOT do
 
