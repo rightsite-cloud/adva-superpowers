@@ -1,6 +1,6 @@
 # Import error reference
 
-Load this reference when `validate_records` or `upload_records` returns errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
+Load this reference when `validate_records` or `upload_csv` returns errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
 
 ## Error classification
 
