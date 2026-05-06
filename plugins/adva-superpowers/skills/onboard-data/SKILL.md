@@ -73,10 +73,43 @@ Before importing, understand the key invariants that govern how Adva stores data
 
    Terminal states and what to do next:
    - `completed` → proceed to step 9
-   - `awaiting_review` → the tool returns a `next_action` directing you to `get_normalization_summary`; follow it
+   - `awaiting_review` → the tool returns a `next_action` directing you to `get_normalization_summary`; call `mcp__adva-staging__get_normalization_summary`. If `normalization_result.needs_manual_review` is non-empty, present each item to the user with a plain-language explanation and ask: "Accept the normalization as-is?" or "Revert these specific changes?" before calling `mcp__adva-staging__approve_import`.
    - `failed` → surface the error to the user; use `mcp__adva-staging__retry_normalization` if appropriate
 
-9. **Verify idempotency.** Call `mcp__adva-staging__get_external_ids` with the same `source` value to confirm records are linked. Re-running the import should upsert (match by `external_id`), not duplicate. `mcp__adva-staging__list_imports` gives an audit trail of prior runs — useful to confirm "did this already land?" before kicking off a re-run.
+9. **Review row-level errors (if any).** When polling reaches a terminal state, check the `next_action` field:
+
+   a. If `next_action` is null (or `action` is not `review_errors`), skip to step 10.
+
+   b. If `next_action.action == "review_errors"`, the import finished with row failures. Build a grouped error summary from `job.errors[]` — group by `field` + `message` pattern, show the count per group and one sample row. Show it to the user like:
+
+      ```
+      Import completed: 4,837 of 5,000 records imported. 163 records failed:
+
+        Field 'status' — enum value not recognized (142 rows)
+          Sample: row 12 — value "Active " (trailing space)
+
+        Missing required field 'email' (21 rows)
+          Sample: row 8 — external_id: "CUST-0042"
+      ```
+
+      Note: `job.warnings[]` contains coercion notices (type conversions applied automatically). Show these separately from `job.errors[]` (hard failures).
+
+   c. Ask the user what to do. Three paths:
+
+      - **Accept partial result** — if `error_rows < 10%` of `total_rows`, default to this; ask to confirm. The partially-imported records stay; proceed to step 10.
+      - **Export failing rows for correction** — go to step 9d.
+      - **Leave it for now** — proceed to step 10; the failing rows can be fixed in a future upload.
+
+   d. **Correction workflow** (if user chooses to fix):
+      - Read the original CSV file you wrote in step 7 (still on disk as `{entity_type}_{source}.csv`). If the file is no longer on disk, tell the user to re-provide it.
+      - Filter to only the rows whose `external_id` appears in `job.errors[].external_id`.
+      - Check if any errors are FK-type (e.g. "customer not found") — if so, tell the user to confirm the dependency entity was imported first before fixing.
+      - Write the failing rows to `{entity_type}_{source}_corrections.csv` in the same directory.
+      - Tell the user: "Here are the N failing rows in `{filename}`. Fix the values, then tell me when you're ready and I'll re-upload."
+      - When user confirms → upload the corrections file with the same `source` tag using `mcp__adva-staging__upload_csv` or `upload_records`. Previously successful rows are skipped (upsert on `external_id`); only the fixed rows are re-processed.
+      - Re-enter step 8 to poll the correction job.
+
+10. **Verify idempotency.** Call `mcp__adva-staging__get_external_ids` with the same `source` value to confirm records are linked. Re-running the import should upsert (match by `external_id`), not duplicate. `mcp__adva-staging__list_import_jobs` gives an audit trail of prior runs — useful to confirm "did this already land?" before kicking off a re-run.
 
 ## Non-negotiable rules
 
