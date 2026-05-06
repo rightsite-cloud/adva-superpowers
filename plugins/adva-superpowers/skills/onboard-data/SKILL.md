@@ -64,10 +64,9 @@ Before importing, understand the key invariants that govern how Adva stores data
 
    **Rules for this step:**
    - Always write the CSV to disk first — this gives the user an artifact they can inspect or re-upload later.
-   - Pass the entire file's text content to `upload_csv` in a single call. Do not chunk or split the data.
+   - Pass the entire file's text content to `upload_csv` in a single call. Do not chunk or split the data — the tool accepts the full file in one upload.
    - Never write an intermediate JSON file. If records are already in context, write them directly to CSV.
    - `custom_fields` must be a JSON-encoded object in the CSV cell, e.g. `{"HOA Name": "Oak Valley"}` — not a plain string.
-   - If the tool returns an error saying the file is too large (over 1,000 rows), split the CSV file into two halves and upload each separately.
 
 8. **Poll for completion.** `upload_csv` returns a `job_id`. The import processes asynchronously — call `mcp__adva-staging__get_import_status(job_id)` immediately after submitting, then again every 30 seconds until the status reaches a terminal state (`completed`, `failed`, or `awaiting_review`). Expect 10–30 seconds of queue latency before processing begins — that is normal.
 
