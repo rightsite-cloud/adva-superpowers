@@ -38,7 +38,7 @@ Before importing, understand the key invariants that govern how Adva stores data
    - Tier 6: transactions, commissions
 
 4. **Fetch the target schema.** Call `mcp__adva-staging__get_import_schema` with the entity type. The returned schema is the contract — field names, types, required flags, enum constraints. Treat unknown fields as "drop from mapping" rather than "pass through".
-   - If the user wants a **CSV scaffold to fill in or review**, `mcp__adva-staging__get_csv_template` returns a headered CSV for the same entity type — a good intermediate artifact for human review before upload.
+   - To get a pre-headered CSV scaffold, call `mcp__adva-staging__get_csv_template` — use this as the basis for the local CSV file you will write in step 7.
    - If you need to drill into a **specific field's enum or constraints**, `mcp__adva-staging__get_field_schema` returns detail for one field at a time (useful during enum translation).
 
    **Optional — prepare the target before mapping.** Before drafting mappings, check whether the source has data that doesn't fit the current schema. Two mechanisms close that gap:
@@ -51,11 +51,32 @@ Before importing, understand the key invariants that govern how Adva stores data
 
 6. **Validate first.** Send a small batch (3–5 records) through `mcp__adva-staging__validate_records`. This is a dry run — it reports errors without writing. Surface every error to the user. Fix the mapping, drop bad rows, or ask about ambiguous values before moving on.
 
-7. **Upload in chunks.** Once the batch validates cleanly, call `mcp__adva-staging__upload_records` with the full set. Chunk large imports (roughly 50–200 records per call). If the user has a well-formed CSV already, `mcp__adva-staging__upload_csv` is a one-shot alternative — the server parses it.
+7. **Write a local CSV file, then upload it.** Once validation passes, fetch **all** records from the source, apply the confirmed mapping, and write them to a CSV file in the user's current working directory. Name it `{entity_type}_{source}.csv` (e.g. `team_member_airtable.csv`). Then upload:
 
-8. **Poll status.** Uploads are async — `upload_records` returns a `job_id`. Call `mcp__adva-staging__get_import_status(job_id)` until it reports completion. Expect 10–30s of queue latency before processing actually starts; that's normal, not a hang.
+   ```
+   # Read the file you just wrote and pass its text content as csv_content
+   mcp__adva-staging__upload_csv({
+     entity_type: "team_member",
+     csv_content: <full text content of the file>,
+     source: "airtable"
+   })
+   ```
 
-9. **Verify idempotency.** Call `mcp__adva-staging__get_external_ids` with the same `source` value to confirm records are linked. Re-running the import should upsert (match by `external_id`), not duplicate. `mcp__adva-staging__list_import_jobs` gives an audit trail of prior runs — useful to confirm "did this already land?" before kicking off a re-run.
+   **Rules for this step:**
+   - Always write the CSV to disk first — this gives the user an artifact they can inspect or re-upload later.
+   - Pass the entire file's text content to `upload_csv` in a single call. Do not chunk or split the data.
+   - Never write an intermediate JSON file. If records are already in context, write them directly to CSV.
+   - `custom_fields` must be a JSON-encoded object in the CSV cell, e.g. `{"HOA Name": "Oak Valley"}` — not a plain string.
+   - If the tool returns an error saying the file is too large (over 1,000 rows), split the CSV file into two halves and upload each separately.
+
+8. **Poll for completion.** `upload_csv` returns a `job_id`. The import processes asynchronously — call `mcp__adva-staging__get_import_status(job_id)` immediately after submitting, then again every 30 seconds until the status reaches a terminal state (`completed`, `failed`, or `awaiting_review`). Expect 10–30 seconds of queue latency before processing begins — that is normal.
+
+   Terminal states and what to do next:
+   - `completed` → proceed to step 9
+   - `awaiting_review` → the tool returns a `next_action` directing you to `get_normalization_summary`; follow it
+   - `failed` → surface the error to the user; use `mcp__adva-staging__retry_normalization` if appropriate
+
+9. **Verify idempotency.** Call `mcp__adva-staging__get_external_ids` with the same `source` value to confirm records are linked. Re-running the import should upsert (match by `external_id`), not duplicate. `mcp__adva-staging__list_imports` gives an audit trail of prior runs — useful to confirm "did this already land?" before kicking off a re-run.
 
 ## Non-negotiable rules
 
@@ -63,23 +84,12 @@ These are Adva platform facts. Violating them breaks idempotency, produces bad d
 
 - **Never fabricate, invent, or fill in data values.** If a field is blank, null, or missing in the source data, pass it as blank/null. Do not generate placeholder emails, phone numbers, prices, or any other values. Your job is to map and load, not to clean or enrich.
 - **Never modify source data without explicit user approval.** If you think a value looks wrong, incomplete, or needs formatting — ask the user. Do not silently fix, normalize, or transform values. Show them what you see and what you would propose, and wait for confirmation.
-- **Always set `external_id` and `source` on every record.** `external_id` is the source system's primary key; `source` is a short string identifying the system (e.g. `"csv_upload"`, `"sheets"`, `"jobber"`). Without these, every re-run creates duplicates.
+- **Always set `external_id` and `source` on every record.** `external_id` is the source system's primary key; `source` is a short string identifying the system (e.g. `"airtable"`, `"jobber"`, `"csv"`). Without these, every re-run creates duplicates.
 - **Cross-entity references use `*_external_id` fields, never Adva UUIDs.** E.g. on a proposal, set `customer_external_id` to the source's customer ID. The import API resolves these to Adva UUIDs via an external-id index.
 - **Never send computed values.** Totals, margins, balances, tax amounts, line totals — Adva computes these natively from the constituent fields. If the source has them, drop them from the mapping rather than passing them through.
 - **Respect entity tiers.** A tier-4 entity (e.g. proposal) that references a tier-2 entity (customer) requires the customer to already exist in Adva. If you try to import them in the wrong order, validation fails.
-- **`custom_fields` is a JSON object, not a string.** The value on a record is an object keyed by custom-field definition name, e.g. `{"HOA Name": "Oak Valley"}`. A string will fail validation. If you want to *define* a new custom field, that's a separate step — see [references/custom-fields.md](references/custom-fields.md).
-
-## Building a CSV when the source doesn't expose one
-
-If the source is rich (Airtable, a database) but the user prefers to review data before upload, an intermediate CSV can be a good pattern:
-
-1. Fetch a CSV scaffold with `mcp__adva-staging__get_csv_template` (headers already match the schema).
-2. Inspect the source, extract only the columns in the current mapping, and fill the scaffold.
-3. Include `external_id` and `source` columns.
-4. Let the user review / edit the file.
-5. Upload via `mcp__adva-staging__upload_csv`, or read it back and call `upload_records`.
-
-This is especially useful when the user wants to spot-check name cleanup, enum translation, or sensitive fields before anything lands in Adva.
+- **`custom_fields` in CSV must be a JSON-encoded object string.** The CSV cell should contain the full JSON object, e.g. `{"HOA Name": "Oak Valley"}`. A plain text value will fail validation. If you want to *define* a new custom field, that's a separate step — see [references/custom-fields.md](references/custom-fields.md).
+- **Never write intermediate JSON files.** Records fetched from a source belong in a CSV file on disk, not in a JSON file. Writing JSON to disk and reading it back adds latency with no benefit.
 
 ## Source-specific guidance
 
@@ -102,10 +112,11 @@ Load only when the onboarding actually needs schema extension or customer-specif
 - **Secondary contacts.** Many sources collapse primary + secondary customer onto one record. Adva's customer entity is per-contact; a second contact is its own customer record, linked via the shared proposal or account.
 - **Addresses are separate entities.** Billing / service addresses belong on a `location` record, not directly on a customer. Customer → location is 1:N.
 - **Field names are exact.** Adva field names are snake_case and case-sensitive. Don't normalize spaces or change capitalization when building mappings.
+- **Proposals and jobs with line items.** `line_items` and `job_items` cannot be expressed in a flat CSV. Import the parent entities first (as `proposal` / `job` entity types), then import child items as `proposal_item` / `job_item` with the parent's `external_id` as the FK reference.
 
 ### Failure interpretation
 
-When `validate_records` or `upload_records` returns errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
+When `validate_records` or `upload_csv` returns errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
 
 Errors fall into two classes:
 - **Data issues** — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
