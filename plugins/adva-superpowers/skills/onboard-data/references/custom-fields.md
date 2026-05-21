@@ -54,4 +54,4 @@ A string fails validation. The definition for each key must exist on the target 
 - **Definition names are the join key** on a record's `custom_fields` object. Renaming a definition after records exist orphans those values.
 - **`required: true` bites backfills.** If the source doesn't have a value for the field on every record, don't mark it required — imports will reject rows without the value. Start optional; tighten later once the data is clean.
 - **Duplicate names across entity types are allowed** (same `"HOA Name"` on customer and location). But be intentional — a single definition is not shared across entities; each entity type has its own.
-- **Validation before upload.** `validate_custom_field_value` is cheaper than a full `validate_records` when debugging one problem field. Use it in tight loops while sorting out dirty source data.
+- **Validation before upload.** `validate_custom_field_value` is cheaper than a full `start_csv_import` job when debugging one problem field. Use it in tight loops while sorting out dirty source data.
