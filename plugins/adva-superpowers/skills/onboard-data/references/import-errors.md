@@ -1,6 +1,6 @@
 # Import error reference
 
-Load this reference when `validate_records` or `upload_csv` returns errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
+Load this reference when `start_csv_import` or `get_import_status` surfaces import errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
 
 ## Error classification
 
@@ -44,14 +44,19 @@ Tell the user: *"Filed ADV-XXX — '[title]'. Ryan will see this. Let's continue
 
 Do not block the rest of the import on a platform bug. Continue with the records that passed validation.
 
-## Interpreting validate_records output
+## Interpreting import errors
 
-`validate_records` returns errors at the record level. For each error:
+There is no separate dry-run validation step — validation runs server-side as part of `start_csv_import`, on the uploaded file. Errors surface in one of two shapes:
 
-1. Identify the error class using the table above.
+- **Whole-job rejection.** The `external_id` integrity gate runs before any write: if *any* row is missing or blank `external_id`, the entire import is rejected and the job ends `failed` with the offending rows listed in `job.errors[]`. You never get a half-written import — a file that fails this check writes nothing. The fix is always "correct the source file and re-upload"; the re-run is safe because the import is idempotent on `(source, external_id)`.
+- **Row-level errors.** The job reaches `completed` with `error_rows > 0`. Bad rows (enum mismatch, FK violation, bad `custom_fields` type, etc.) are skipped; good rows land. `get_import_status` returns `next_action.action == "review_errors"` — read `job.errors[]` (hard failures) and `job.warnings[]` (automatic coercions) separately and present a grouped summary.
+
+For each error, regardless of shape:
+
+1. Identify the error class using the tables above.
 2. State the plain-English meaning to the user (no raw database error messages).
 3. Propose the fix. If the fix is a data transformation, show an example.
 4. For platform bugs, file the ticket first, then continue.
-5. After all errors are explained, ask: "Would you like me to apply these fixes and re-validate, or would you prefer to review the data yourself first?"
+5. After all errors are explained, ask: "Would you like me to apply these fixes to the CSV and re-upload, or would you prefer to review the data yourself first?"
 
 Never silently drop erroring records without telling the user. Never invent values to make validation pass.

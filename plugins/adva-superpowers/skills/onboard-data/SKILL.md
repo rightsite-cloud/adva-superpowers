@@ -49,9 +49,9 @@ Before importing, understand the key invariants that govern how Adva stores data
 
 5. **Draft a mapping.** Produce an explicit `{source_field → adva_field}` mapping by comparing the schema to the source columns and sample values. Show the mapping to the user and get confirmation before proceeding. The MCP exposes `mcp__adva-staging__suggest_column_mapping` for AI-assisted drafting, but it may return a Workers AI error code (5024); if it does, fall back to manual mapping from the schema + samples.
 
-6. **Validate first.** Send a small batch (3–5 records) through `mcp__adva-staging__validate_records`. This is a dry run — it reports errors without writing. Surface every error to the user. Fix the mapping, drop bad rows, or ask about ambiguous values before moving on.
+6. **Test with a small sample first.** There is no separate dry-run tool — validation runs server-side as part of the import itself. To catch mapping mistakes cheaply before committing the full dataset, write a 3–5 row CSV with the confirmed mapping and run it through the upload flow in step 7 (`get_upload_url` → PUT → `start_csv_import`). Poll `get_import_status`, then surface every error to the user — fix the mapping, drop bad rows, or ask about ambiguous values before importing the rest. The sample is safe to run for real: imports upsert on `(source, external_id)`, so the sample rows simply update in place during the full import — no duplicates, nothing to undo.
 
-7. **Write a local CSV file, then upload it via the R2 pre-signed PUT flow.** Once validation passes, fetch **all** records from the source, apply the confirmed mapping, and write them to a CSV file in the user's current working directory. Name it `{entity_type}_{source}.csv` (e.g. `team_member_airtable.csv`). Then upload in three steps so the file bytes never travel through the LLM context:
+7. **Write a local CSV file, then upload it via the R2 pre-signed PUT flow.** Once the sample import looks clean, fetch **all** records from the source, apply the confirmed mapping, and write them to a CSV file in the user's current working directory. Name it `{entity_type}_{source}.csv` (e.g. `team_member_airtable.csv`). Then upload in three steps so the file bytes never travel through the LLM context:
 
    ```
    # 7a. Mint a pre-signed PUT URL — the upload_token bundles the import intent.
@@ -75,15 +75,14 @@ Before importing, understand the key invariants that govern how Adva stores data
    ```
 
    **Rules for this step:**
-   - Always write the CSV to disk first — this gives the user an artifact they can inspect or re-upload later.
-   - Use `get_upload_url` + `start_csv_import` for any file beyond ~100 rows. Bytes travel from disk → R2 directly; nothing flows through the LLM context window.
-   - Use `mcp__adva-staging__upload_csv({ entity_type, csv_content, source })` only as a fast path for very small CSVs (≲100 rows) where the content easily fits in context. Anything larger will hit the 25K-token Read limit before the tool sees it.
+   - Always write the CSV to disk first — this gives the user an artifact they can inspect or re-upload later, and keeps the file bytes out of the LLM context.
+   - `get_upload_url` + `start_csv_import` is the **only** way to submit import data, regardless of file size. The bytes travel disk → R2 directly and never flow through the LLM context window, so no value — notably `external_id` — can be altered or invented along the way.
    - The pre-signed URL is valid for 15 minutes; the `upload_token` for 30 minutes. If either expires, mint a fresh pair.
    - Never write an intermediate JSON file. If records are already in context, write them directly to CSV.
    - `custom_fields` must be a JSON-encoded object in the CSV cell, e.g. `{"HOA Name": "Oak Valley"}` — not a plain string.
    - **ADV-1046 (merged + deployed 2026-05-20)** moved the import pipeline onto a durable Cloudflare Workflow — the historic 200-record stall on large imports is fixed. Imports up to 25 MiB now run end-to-end through one call.
 
-8. **Poll for completion.** Both `start_csv_import` and `upload_csv` return a `job_id`. The import processes asynchronously — call `mcp__adva-staging__get_import_status(job_id)` immediately after submitting, then again every 30 seconds until the status reaches a terminal state (`completed`, `failed`, or `awaiting_review`). Expect 10–30 seconds of queue latency before processing begins — that is normal.
+8. **Poll for completion.** `start_csv_import` returns a `job_id`. The import processes asynchronously — call `mcp__adva-staging__get_import_status(job_id)` immediately after submitting, then again every 30 seconds until the status reaches a terminal state (`completed`, `failed`, or `awaiting_review`). Expect 10–30 seconds of queue latency before processing begins — that is normal.
 
    Terminal states and what to do next:
    - `completed` → proceed to step 9
@@ -120,10 +119,10 @@ Before importing, understand the key invariants that govern how Adva stores data
       - Check if any errors are FK-type (e.g. "customer not found") — if so, tell the user to confirm the dependency entity was imported first before fixing.
       - Write the failing rows to `{entity_type}_{source}_corrections.csv` in the same directory.
       - Tell the user: "Here are the N failing rows in `{filename}`. Fix the values, then tell me when you're ready and I'll re-upload."
-      - When user confirms → upload the corrections file with the same `source` tag. For corrections, the file is usually small enough that `mcp__adva-staging__upload_csv` (inline) is fine; for larger correction batches go through `get_upload_url` + `start_csv_import` like step 7. `upload_records` is also valid when the corrected rows are already in context. Previously successful rows are skipped (upsert on `external_id`); only the fixed rows are re-processed.
+      - When user confirms → upload the corrections file with the same `source` tag, through the same `get_upload_url` → PUT → `start_csv_import` flow as step 7. Previously successful rows are skipped (upsert on `external_id`); only the fixed rows are re-processed.
       - Re-enter step 8 to poll the correction job.
 
-10. **Verify idempotency.** Call `mcp__adva-staging__get_external_ids` with the same `source` value to confirm records are linked. Re-running the import should upsert (match by `external_id`), not duplicate. `mcp__adva-staging__list_import_jobs` gives an audit trail of prior runs — useful to confirm "did this already land?" before kicking off a re-run.
+10. **Verify idempotency.** Call `mcp__adva-staging__get_external_ids` with the same `source` value to confirm records are linked. Re-running the import should upsert (match by `external_id`), not duplicate. `mcp__adva-staging__list_imports` gives an audit trail of prior runs — useful to confirm "did this already land?" before kicking off a re-run.
 
 ## Non-negotiable rules
 
@@ -163,7 +162,7 @@ Load only when the onboarding actually needs schema extension or customer-specif
 
 ### Failure interpretation
 
-When `validate_records`, `upload_csv`, or `start_csv_import` returns errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
+When `start_csv_import` or `get_import_status` surfaces errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
 
 Errors fall into two classes:
 - **Data issues** — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
