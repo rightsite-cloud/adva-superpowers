@@ -107,6 +107,8 @@ Before importing, understand the key invariants that govern how Adva stores data
 
       Note: `job.warnings[]` contains coercion notices (type conversions applied automatically). Show these separately from `job.errors[]` (hard failures).
 
+   b-bis. **Get an AI diagnosis before classifying.** Call `mcp__adva-staging__diagnose_import_failure({ job_id })`. It assembles this run's reconciliation diff, row errors, R2 artifacts, and Workers Logs (filtered by `importJobId`) and returns a structured diagnosis: `root_cause` (`category`: `data` | `platform` | `config` | `transient`), cited `evidence[]`, ordered `suggested_remediation[]`, `retry_safe`, and a `file_linear_ticket` recommendation. **Use `root_cause.category` as the primary signal** for the data-issue-vs-platform-bug decision in the Failure interpretation section — it is more reliable than matching error strings. When `file_linear_ticket.recommended` is true (and `LINEAR_FILING_ENABLED`), file using the returned `title`/`body` (PII already stripped). The tool is rate-limited to one fresh diagnosis per job per 60s, so the result is cached for follow-up reads. If the tool is unavailable, fall back to the static classification rules below.
+
    c. Ask the user what to do. Three paths:
 
       - **Accept partial result** — if `error_rows < 10%` of `total_rows`, default to this; ask to confirm. The partially-imported records stay; proceed to step 10.
@@ -164,9 +166,11 @@ Load only when the onboarding actually needs schema extension or customer-specif
 
 When `start_csv_import` or `get_import_status` surfaces errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
 
+**Prefer the AI diagnosis for classification.** `mcp__adva-staging__diagnose_import_failure({ job_id })` (see step 9b-bis) returns `root_cause.category` — let that drive the data-vs-platform decision. The static rules below are the fallback when the tool is unavailable and the basis for the reference doc's per-error guidance.
+
 Errors fall into two classes:
-- **Data issues** — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
-- **Platform bugs** — `idx_contacts_email` violation (post-ADV-749), unexpected 500 on small batch, server timeout on small batch, any error contradicting the stated model. Auto-file a Linear ticket if `LINEAR_FILING_ENABLED`. Continue with records that passed.
+- **Data issues** (`root_cause.category == "data"` — or `"config"`) — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
+- **Platform bugs** (`root_cause.category == "platform"`) — `idx_contacts_email` violation (post-ADV-749), unexpected 500 on small batch, server timeout on small batch, any error contradicting the stated model. Auto-file a Linear ticket if `LINEAR_FILING_ENABLED` (use the diagnosis's `file_linear_ticket.title`/`body` when provided). Continue with records that passed.
 
 Never show raw database error messages to the user. Translate them. Never drop failing records silently.
 
