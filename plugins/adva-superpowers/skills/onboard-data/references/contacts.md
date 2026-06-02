@@ -36,11 +36,11 @@ An import that creates a "customer" actually writes to three places: `core.conta
 
 This is the correct behavior — "already exists globally" means the contact is a real person the platform has already seen (perhaps from another business in the same account). The platform attaches a new role rather than creating a duplicate person.
 
-**If `idx_contacts_email` surfaces as a raw error in validate or upload results:** this should not happen after ADV-749. If it does, it is a platform bug. Do not ask the user to rename the email. Auto-file a Linear ticket via `mcp__linear__createIssue` with:
-- team: ADV
-- label: onboarding
-- priority: P2
-- entity type, error verbatim, first offending record (strip PII — no email/name in ticket body), expected vs. observed
+**If `idx_contacts_email` surfaces as a raw error in validate or upload results:** this should not happen after ADV-749. If it does, it is a platform bug. Do not ask the user to rename the email. Call `mcp__adva-staging__report_import_problem({ job_id, title, body })` with:
+- `title`: short imperative — e.g. `"idx_contacts_email surfaced on contact import"`
+- `body`: entity type, error verbatim, first offending record (PII already stripped server-side via `diagnose_import_failure`), expected vs. observed
+
+Then speak the response per the rules in [references/import-errors.md → How to file a platform bug](import-errors.md#how-to-file-a-platform-bug).
 
 ## Phone matching
 
