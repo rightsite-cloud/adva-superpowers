@@ -22,7 +22,7 @@ Before importing, understand the key invariants that govern how Adva stores data
 - **Email is the global identity key**: `UNIQUE INDEX idx_contacts_email` enforces one contact per email address across the entire account. The import pipeline uses an upsert — if the email already exists, a new role is attached to the existing contact. Post-ADV-749, `idx_contacts_email` surfacing as a raw error is a platform bug, not a data error.
 - **Phone is a soft match signal, not a unique key**: Normalized to E.164 via trigger. Multiple contacts can share a phone number. `find_duplicate_contacts()` uses phone for advisory matching only — no uniqueness enforced.
 - **Entity tiers**: Tier-3+ records have FK constraints on tier-2. A proposal (`customer_id` FK) requires the customer to exist before the proposal can import. Wrong order = FK violation. Always import lower tiers first.
-- **Linear auto-filing**: At startup (after picking the business), check whether `mcp__linear__*` tools are available and whether the ADV project is accessible. If yes, tell the user: *"I can file platform bugs directly into Linear as we find them. Platform bugs — I file; data issues — I help you fix here."* Set `LINEAR_FILING_ENABLED = true` in the session. If tools are present but ADV project is not accessible, proceed silently.
+- **Platform-bug filing is built in**: The Adva MCP server files platform bugs on the user's behalf via `mcp__adva-staging__report_import_problem` — the user needs no Linear account. At the first sign of a platform bug you'll call this tool and tell them: *"Logged as `<id>` — we're on it."* If the server isn't configured to file yet, you'll surface what would have been filed instead; either way, the user keeps moving.
 
 ## The core workflow
 
@@ -107,6 +107,8 @@ Before importing, understand the key invariants that govern how Adva stores data
 
       Note: `job.warnings[]` contains coercion notices (type conversions applied automatically). Show these separately from `job.errors[]` (hard failures).
 
+   b-bis. **Get an AI diagnosis before classifying.** Call `mcp__adva-staging__diagnose_import_failure({ job_id })`. It assembles this run's reconciliation diff, row errors, R2 artifacts, and Workers Logs (filtered by `importJobId`) and returns a structured diagnosis: `root_cause` (`category`: `data` | `platform` | `config` | `transient`), cited `evidence[]`, ordered `suggested_remediation[]`, `retry_safe`, and a `file_linear_ticket` recommendation. **Use `root_cause.category` as the primary signal** for the data-issue-vs-platform-bug decision in the Failure interpretation section — it is more reliable than matching error strings. When `file_linear_ticket.recommended` is true, call `mcp__adva-staging__report_import_problem({ job_id, title, body })` using the returned `title`/`body` (PII already stripped). The tool returns `{ filed, identifier, url }`; see the "Platform bugs" bullet in the Failure interpretation section below for how to speak each response. The tool is rate-limited to one fresh diagnosis per job per 60s, so the result is cached for follow-up reads. If the tool is unavailable, fall back to the static classification rules below.
+
    c. Ask the user what to do. Three paths:
 
       - **Accept partial result** — if `error_rows < 10%` of `total_rows`, default to this; ask to confirm. The partially-imported records stay; proceed to step 10.
@@ -164,9 +166,16 @@ Load only when the onboarding actually needs schema extension or customer-specif
 
 When `start_csv_import` or `get_import_status` surfaces errors, load [references/import-errors.md](references/import-errors.md) and explain each error in plain terms before asking the user to fix anything.
 
+**Prefer the AI diagnosis for classification.** `mcp__adva-staging__diagnose_import_failure({ job_id })` (see step 9b-bis) returns `root_cause.category` — let that drive the data-vs-platform decision. The static rules below are the fallback when the tool is unavailable and the basis for the reference doc's per-error guidance.
+
 Errors fall into two classes:
-- **Data issues** — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
-- **Platform bugs** — `idx_contacts_email` violation (post-ADV-749), unexpected 500 on small batch, server timeout on small batch, any error contradicting the stated model. Auto-file a Linear ticket if `LINEAR_FILING_ENABLED`. Continue with records that passed.
+- **Data issues** (`root_cause.category == "data"` — or `"config"`) — enum mismatch, missing required field, wrong tier order, bad `custom_fields` type, duplicate `external_id` within batch. Guide the user to fix these.
+- **Platform bugs** (`root_cause.category == "platform"`) — `idx_contacts_email` violation (post-ADV-749), unexpected 500 on small batch, server timeout on small batch, any error contradicting the stated model. Call `mcp__adva-staging__report_import_problem({ job_id, title, body })` using the diagnosis's `file_linear_ticket.title`/`body` (PII already stripped server-side). Continue with records that passed.
+
+  The tool returns `{ filed, identifier, url }`. Speak each case:
+    - `filed: true` (identifier + url populated) — *"Logged as `<identifier>` — we're on it."*
+    - `filed: false` (identifier + url null) — the server isn't wired up to file yet. Say: *"Couldn't file automatically — Linear isn't wired up here yet. Here's what would have been filed: **<title>** — <one-line body excerpt>. Continuing with records that did succeed."*
+    - tool returns `isError: true` with `error_type: "permanent"` (HTTP 403) — the caller doesn't have business-owner or super-admin rights. Say: *"I don't have permission to file from this account — flagging it for someone who does."* Do not retry.
 
 Never show raw database error messages to the user. Translate them. Never drop failing records silently.
 

@@ -2,6 +2,8 @@
 
 Load this reference when `start_csv_import` or `get_import_status` surfaces import errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
 
+> **Prefer the AI diagnosis.** Call `mcp__adva-staging__diagnose_import_failure({ job_id })` first — it returns a structured `root_cause.category` (`data` | `platform` | `config` | `transient`) with cited evidence and a `file_linear_ticket` recommendation, and is more reliable than matching error strings. Use the tables below as the fallback when the tool is unavailable, and to phrase the plain-English explanation once the category is known. When the diagnosis recommends filing, reuse its `title`/`body` (PII already stripped) rather than hand-writing the ticket.
+
 ## Error classification
 
 ### Data issues — guide the user to fix
@@ -17,7 +19,7 @@ Load this reference when `start_csv_import` or `get_import_status` surfaces impo
 
 ### Platform bugs — auto-file as Linear ticket
 
-These errors should not occur in normal operation. When encountered, file a ticket automatically (if `LINEAR_FILING_ENABLED`) and tell the user.
+These errors should not occur in normal operation. When encountered, call `mcp__adva-staging__report_import_problem({ job_id, title, body })` and surface the result to the user.
 
 | Error class | Why it's a platform bug | What to include in the ticket |
 |-------------|------------------------|-------------------------------|
@@ -28,19 +30,21 @@ These errors should not occur in normal operation. When encountered, file a tick
 
 ## How to file a platform bug
 
-When `LINEAR_FILING_ENABLED` is true in the session:
+Call the server-side MCP tool — the user needs no Linear account:
 
 ```
-mcp__linear__createIssue({
-  teamId: "<ADV team ID>",
-  title: "<Short imperative title>",
-  description: "<Entity type, error verbatim, first offending record with PII stripped, expected vs. observed, MCP tool + parameters>",
-  labelIds: ["<onboarding label ID>"],
-  priority: 2   // P2
+mcp__adva-staging__report_import_problem({
+  job_id: <the import job id from step 6>,
+  title: <short imperative title — use diagnose_import_failure's file_linear_ticket.title when present>,
+  body:  <entity type, error verbatim, first offending record (PII already stripped server-side via diagnose_import_failure), expected vs. observed, MCP tool + parameters>
 })
 ```
 
-Tell the user: *"Filed ADV-XXX — '[title]'. Ryan will see this. Let's continue with the records that did succeed."*
+The server files under Adva's own Linear workspace (with tenant attribution) and returns `{ filed, identifier, url }`. Speak the result:
+
+- `filed: true` — *"Logged as `<identifier>` — we're on it."*
+- `filed: false` (server not yet configured to file) — *"Couldn't file automatically — Linear isn't wired up here yet. Here's what would have been filed: **<title>** — <one-line body excerpt>. Continuing with records that did succeed."*
+- tool returns `isError: true` with `error_type: "permanent"` (HTTP 403, caller lacks business-owner or super-admin rights) — *"I don't have permission to file from this account — flagging it for someone who does."* Do not retry.
 
 Do not block the rest of the import on a platform bug. Continue with the records that passed validation.
 
