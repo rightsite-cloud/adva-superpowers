@@ -1,6 +1,6 @@
 # Import error reference
 
-Load this reference when `validate_records` or `upload_csv` returns errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
+Load this reference when `start_csv_import` fails validation or `get_import_status` reports row-level errors. Explain each error in plain terms to the user before asking them to fix anything. Classification drives the response: **data issues** the agent helps the user fix here; **platform bugs** the agent files automatically as Linear tickets.
 
 ## Error classification
 
@@ -44,9 +44,9 @@ Tell the user: *"Filed ADV-XXX — '[title]'. Ryan will see this. Let's continue
 
 Do not block the rest of the import on a platform bug. Continue with the records that passed validation.
 
-## Interpreting validate_records output
+## Interpreting import errors (`get_import_status`)
 
-`validate_records` returns errors at the record level. For each error:
+`get_import_status` returns errors at the record level (validation runs server-side during `start_csv_import`). For each error:
 
 1. Identify the error class using the table above.
 2. State the plain-English meaning to the user (no raw database error messages).

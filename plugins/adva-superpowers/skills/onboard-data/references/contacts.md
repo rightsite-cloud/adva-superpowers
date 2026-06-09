@@ -12,7 +12,7 @@ core.contacts (global)
 core.contact_roles (scoped)
   contact_id → core.contacts.id
   business_id (the business this role belongs to)
-  role_type: 'customer' | 'team_member' | 'vendor' | ...
+  role_type: 'customer' | 'team_member' | 'trade_partner' | ...
   + role-specific attribute table (see below)
 ```
 

@@ -21,7 +21,7 @@ A contact becomes a *role* in a specific business by having a `contact_role` row
 ```
 core.contacts           (global — one row per person)
   → core.contact_roles  (scoped — one row per role per business)
-      role_type: customer | team_member | vendor | ...
+      role_type: customer | team_member | trade_partner | ...
       business_id: the specific business this role belongs to
 ```
 
@@ -53,16 +53,27 @@ Phone numbers are normalized to E.164 format via a database trigger (`phone_norm
 
 Entities are organized into tiers based on their dependency graph. Tier-N entities hold FK references to tier-(N-1) entities.
 
-| Tier | Examples | FK depends on |
-|------|----------|---------------|
-| 1 | products, territories, brands | (none) |
-| 2 | customers, team members | (none) |
-| 3 | locations | customers (tier 2) |
-| 4 | proposals | customers (tier 2) |
-| 5 | jobs, invoices | proposals (tier 4) |
-| 6 | transactions, commissions | jobs/invoices (tier 5) |
+| Tier  | Examples                                                                 | FK depends on                          |
+|-------|--------------------------------------------------------------------------|----------------------------------------|
+| 1     | products, territories, brands, trade partners                            | (none)                                 |
+| 2     | customers, team members, crews, commission plans, warranty terms, service plans, product-distributor-source joins | (none / same-tier only) |
+| 3     | locations, opportunities, brand assignments, crew members, warranty-term-product joins | customers, products (tiers 1–2) |
+| 4     | proposals, proposal items, jobs, appointments, service agreements        | customers, opportunities (tiers 2–3)   |
+| 5     | job items, invoices, warranty obligations, warranty claims, proposal discounts | proposals, jobs, warranty terms (tiers 2–4) |
+| 6     | transactions, commissions, communications                                | jobs/invoices (tier 5)                 |
+| 7     | activity events                                                          | any earlier entity (polymorphic)       |
+| 8–10  | media submissions → media items → media subjects                         | submission < item < subject; subject polymorphic on any parent |
 
-**Why this matters for imports:** A proposal row has a `customer_id` FK. If the customer contact does not yet exist in Adva for this business, importing the proposal fails with a FK violation. The fix is always: import lower tiers first.
+> A **trade partner** (ADR-0052) is a contact playing the `trade_partner` role
+> (manufacturer / distributor / supplier / warranty_provider / subcontractor /
+> financing_provider sub-roles). It imports at tier 1 — before products link a
+> manufacturer, crews link a subcontractor owner, and warranty terms link a
+> provider. **Warranties** follow the 3-layer model (ADR-0047): `warranty_term`
+> (template, tier 2) → `warranty` (obligation, tier 5) → `warranty_claim`
+> (tier 5). **Service/maintenance agreements** (ADR-0048): `service_plan`
+> (template, tier 2) → `service_agreement` (tier 4; visit jobs reference it).
+
+**Why this matters for imports:** A proposal row has a `customer_id` FK. If the customer contact does not yet exist in Adva for this business, importing the proposal fails with a FK violation. The fix is always: import lower tiers first. The canonical, always-current tier order comes from `mcp__adva-staging__list_entity_types` — this table is a human-readable summary.
 
 When the user's source has data spanning multiple tiers (e.g. a single Airtable base with both customer and proposal rows), always plan the import sequence: customers first, then proposals, then jobs, etc.
 
